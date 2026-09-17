@@ -14,7 +14,9 @@
 
 抓取灭火器 → 瞄准火源喷射 → 火焰粒子与火光随火势衰减 → 三处火源全灭，弹出结算面板与评分。
 
-> GIF 为 13 秒节选（完整录屏 44 秒）。录制环境：XR Device Simulator，无真头显。
+▶ **[完整演示（44 秒）](https://www.bilibili.com/video/BV1zVeG6QEVo)**
+
+> GIF 为 13 秒节选。录制环境：XR Device Simulator，无真头显。
 
 ---
 
