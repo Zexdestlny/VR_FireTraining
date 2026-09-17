@@ -51,6 +51,10 @@
 | 重置手柄位置 | `V` |
 | 显示 / 隐藏性能 HUD | `F1` |
 
+> 手里**抓着灭火器**时，`W A S D` / `Q E` 的语义会切换成「拿着灭火器走路」，
+> 不再把手伸出去。原因见 [核心实现 6](#6-拿着灭火器走路接管模拟器位移)——
+> 否则物体跟着手柄跑，透视上会忽大忽小。
+
 ---
 
 ## 代码结构
@@ -58,13 +62,14 @@
 ```
 Assets/
 ├── Scripts/
-│   ├── Fire.cs                 # 单个火源：火势衰减 / 复燃 / 熄灭事件
-│   ├── Extinguisher.cs         # 灭火器：喷射判定 + 射线检测 + 粒子表现
-│   ├── TrainingManager.cs      # 培训流程：进度统计 / 用时 / 评分 / UI 驱动
-│   └── PerformanceHUD.cs       # 运行时性能 HUD（FPS / ms / DrawCall / 三角面）
+│   ├── Fire.cs                        # 单个火源：火势衰减 / 复燃 / 熄灭事件
+│   ├── Extinguisher.cs                # 灭火器：喷射判定 + 射线检测 + 粒子表现
+│   ├── TrainingManager.cs             # 培训流程：进度统计 / 用时 / 评分 / UI 驱动
+│   ├── PerformanceHUD.cs              # 运行时性能 HUD（FPS / ms / DrawCall / 三角面）
+│   └── SimulatorGrabLocomotion.cs     # 无头显调试：抓住物体后 WASD 变成「拿着走」
 └── Editor/
-    ├── FireSceneBuilder.cs     # 一键生成完整场景（MenuItem）
-    └── FireVerification.cs     # 自动化验证（MenuItem + batchmode）
+    ├── FireSceneBuilder.cs            # 一键生成完整场景（MenuItem）
+    └── FireVerification.cs            # 自动化验证（MenuItem + batchmode）
 ```
 
 **设计原则：数据与表现分离。**
@@ -134,6 +139,30 @@ Physics.Raycast(origin, dir, out hit, range=6, hitMask, QueryTriggerInteraction.
 显示 FPS / 帧耗时 / DrawCall / 三角面。FPS 用指数平滑避免跳数，并按时段变色
 （< 72fps 变黄、< 45fps 变红），因为 VR 的目标帧率是 72/90fps，掉帧是眩晕的首要原因。
 DrawCall 与三角面通过 `ProfilerRecorder(ProfilerCategory.Render, ...)` 读取，取不到就显示 `-`。
+
+### 6. 拿着灭火器走路（接管模拟器位移）
+
+无头显调试时会撞上一个反直觉的问题：**手柄操纵键和移动键是同一个**。
+按住空格操纵右手柄，再按 `W` 本意是「把手伸出去」，
+但抓着灭火器时这一下会让物体跟着手柄往相机前方跑，透视上忽大忽小。
+
+根因在 `XRDeviceSimulator.ProcessPoseInput()`：当 `axis2DTargets` 含 `Position` 时，
+它把键盘位移**直接累加到被操纵手柄的 `devicePosition`**；
+而 `XRGrabInteractable` 又把物体牢牢钉在手上，于是物体跟着一起跑。
+这是模拟器的设计行为，真头显里不存在。
+
+`SimulatorGrabLocomotion.cs` 的思路是**在模拟器之后接管这段位移**：
+
+| 要点 | 做法 |
+|---|---|
+| 抢在模拟器之后 | `[DefaultExecutionOrder(10000)]` + `LateUpdate()`，改写结果不会被覆盖 |
+| 什么时候介入 | 按住手柄操纵键 **且** 手里确实抓着东西（`manipulatingXxxDevice && XRGrabInteractable.isSelected`） |
+| 介入后怎么动 | 不再动手柄，而是把同一段位移**同时加到 HMD 和双手柄**，三者相对位置不变 → 视觉上就是「拿着灭火器走路」 |
+| 没按方向键时 | 不介入，但把基准位姿同步到当前值，避免和模拟器抢控制权 |
+| 位移算法 | 与模拟器 FPS 分支一致：`keyboardXxxTranslateSpeed × keyboardBodyTranslateMultiplier × dt`，再按相机水平朝向旋转、变换回 `cameraParent` 局部空间 |
+
+**没有 fork XRI 包，也没有往场景里拖组件**——
+脚本用 `[RuntimeInitializeOnLoadMethod(AfterSceneLoad)]` 自建 GameObject 自动挂载。
 
 ---
 
@@ -251,6 +280,32 @@ XRI 的模拟器帮助面板用 `controls[0]` 索引绑定列表
 把某个动作的绑定全部删掉，`controls` 长度为 0，索引 `[0]` 直接抛
 `ArgumentOutOfRangeException`。**改绑定只能改 path，不能删到零个。**
 
+### ⑧ 反射读模拟器私有状态：为什么这次值得
+
+`XRDeviceSimulator` 把三个设备状态存成私有字段：
+
+```csharp
+XRSimulatedControllerState m_LeftControllerState;
+XRSimulatedControllerState m_RightControllerState;
+XRSimulatedHMDState        m_HMDState;
+```
+
+**没有任何公开 API 能改写它们**，而 `SimulatorGrabLocomotion` 必须改写。
+摆在面前三条路：fork 整个 XRI 包、直接改包源码、反射。前两条会让以后升级 XRI 变成噩梦，所以选反射：
+
+```csharp
+_fLeft = type.GetField("m_LeftControllerState",
+                       BindingFlags.Instance | BindingFlags.NonPublic);
+```
+
+两个必须注意的点：
+
+1. **它们是 `struct`**。`GetValue` 拿到的是**副本**，改副本对模拟器没有任何影响——
+   必须「整块读出 → 改 → 整块 `SetValue` 写回」，不能只改其中一个字段。
+2. **字段名是私有实现细节**，XRI 升级后可能改名。所以拿不到字段时
+   **打一条明确的错误日志并 `enabled = false` 优雅降级**，
+   而不是每帧抛 `NullReferenceException` 把 Console 刷爆。
+
 ---
 
 ## 已知限制
@@ -263,6 +318,8 @@ XRI 的模拟器帮助面板用 `controls[0]` 索引绑定列表
 - **无存档/配置系统**
 - **交互组件以 XRI 内置为主**：`XRGrabInteractable` / `XRRayInteractor` 未做自定义子类扩展
 - **性能 HUD 的 DrawCall/三角面**依赖 `ProfilerRecorder`，部分环境取不到（会显示 `-`）
+- **`SimulatorGrabLocomotion` 依赖 XRI 的私有字段名**：升级 XRI 后若字段改名会失效
+  （已做优雅降级，不会崩）。它只服务于无头显调试，接真头显时可以直接删掉
 
 ---
 
