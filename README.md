@@ -306,6 +306,35 @@ _fLeft = type.GetField("m_LeftControllerState",
    **打一条明确的错误日志并 `enabled = false` 优雅降级**，
    而不是每帧抛 `NullReferenceException` 把 Console 刷爆。
 
+### ⑨ 脚本创建的粒子系统，材质引用会丢
+
+录演示视频时发现火焰是**洋红色**的——Unity 里「材质丢失」的标志色。
+回头查提交的场景文件，7 个 `ParticleSystemRenderer` 的材质全是空：
+
+```yaml
+ParticleSystemRenderer:
+  m_Materials:
+  - {fileID: 0}      # 空材质 → 渲染成洋红
+```
+
+根因在生成器：`CreateParticles()` 只做了 `AddComponent<ParticleSystem>()`，**没有显式赋材质**。
+而 `AddComponent` 出来的 ParticleSystem，它那个「默认粒子材质」是一个**不参与序列化的运行时引用**，
+保存场景时就被写成 `{fileID: 0}`。
+
+这个坑阴险的地方在于：**在编辑器里当场看是正常的**（默认材质还在内存里），
+**重新打开工程、或者别人 clone 下来，就全是洋红色**。
+所以「我自己跑过了没问题」并不作数——要么重开工程再看一眼，要么直接查场景文件里材质是不是 `{fileID: 0}`。
+
+修复是显式取内置资源：
+
+```csharp
+var psr = go.GetComponent<ParticleSystemRenderer>();
+psr.sharedMaterial = AssetDatabase.GetBuiltinExtraResource<Material>("Default-ParticleSystem.mat");
+```
+
+同时加了菜单 **VR培训 → 修复粒子材质（洋红色）**，用于**就地修复**已经生成好的场景——
+不必重跑 `BuildScene`（那会重建整个场景，把手工调过的设置一起冲掉）。
+
 ---
 
 ## 已知限制

@@ -137,6 +137,47 @@ public static class FireSceneBuilder
             "好的");
     }
 
+    /// <summary>
+    /// 就地修复已生成场景里的粒子材质（洋红色）。
+    /// 用于修复早期版本生成器留下的场景——不必重跑 BuildScene，
+    /// 避免把手工调过的场景设置一起冲掉。
+    /// </summary>
+    [MenuItem("VR培训/修复粒子材质（洋红色）")]
+    public static void RepairParticleMaterials()
+    {
+        Material mat = DefaultParticleMaterial();
+        if (mat == null)
+        {
+            EditorUtility.DisplayDialog("修复失败", "取不到内置默认粒子材质，请查看 Console。", "好的");
+            return;
+        }
+
+        var renderers = Object.FindObjectsByType<ParticleSystemRenderer>(
+            FindObjectsInactive.Include, FindObjectsSortMode.None);
+
+        int fixedCount = 0;
+        foreach (var r in renderers)
+        {
+            if (r.sharedMaterial != null) continue;
+            r.sharedMaterial = mat;
+            EditorUtility.SetDirty(r);
+            fixedCount++;
+        }
+
+        if (fixedCount > 0)
+        {
+            EditorSceneManager.MarkAllScenesDirty();
+            EditorSceneManager.SaveOpenScenes();
+        }
+
+        Debug.Log($"[VR培训] 粒子材质修复：处理 {fixedCount} 个（场景共 {renderers.Length} 个粒子渲染器）。");
+        EditorUtility.DisplayDialog("修复粒子材质",
+            fixedCount > 0
+                ? $"已为 {fixedCount} 个粒子渲染器赋上默认粒子材质，场景已保存。\n\n按 Play 确认火焰是橙色的。"
+                : "没有发现材质为空的粒子渲染器，无需修复。",
+            "好的");
+    }
+
     // ===================== 辅助 =====================
 
     /// <summary>按文件名在所有预制体里查找并实例化（用于自动放入 XRI 样例的 XR Origin / Device Simulator）。</summary>
@@ -159,6 +200,20 @@ public static class FireSceneBuilder
         if (shader == null) shader = Shader.Find("Standard");
         var m = new Material(shader) { color = c };
         return m;
+    }
+
+    /// <summary>
+    /// 内置默认粒子材质（shader = Particles/Standard Unlit）。
+    /// 取 Unity 自带的内置资源，不依赖任何包，也不用往工程里塞资源文件。
+    /// </summary>
+    static Material DefaultParticleMaterial()
+    {
+        Material mat = AssetDatabase.GetBuiltinExtraResource<Material>("Default-ParticleSystem.mat");
+        if (mat == null)
+            mat = Resources.GetBuiltinResource<Material>("Default-ParticleSystem.mat");
+        if (mat == null)
+            Debug.LogWarning("[VR培训] 取不到内置默认粒子材质，火焰与喷射粒子会渲染成洋红色。");
+        return mat;
     }
 
     static GameObject CreateBox(string name, Transform parent, Vector3 pos, Vector3 scale, Material mat)
@@ -228,6 +283,12 @@ public static class FireSceneBuilder
         var go = new GameObject(name);
         go.transform.SetParent(parent, false);
         ParticleSystem ps = go.AddComponent<ParticleSystem>();
+
+        // 材质必须显式赋。脚本 AddComponent 出来的 ParticleSystem，其默认材质引用
+        // 在保存场景时会被序列化成空（m_Materials: - {fileID: 0}），
+        // 渲染出来就是 Unity 的「缺材质洋红」——火焰和喷射粒子全变成紫色方块。
+        var psr = go.GetComponent<ParticleSystemRenderer>();
+        psr.sharedMaterial = DefaultParticleMaterial();
 
         var main = ps.main;
         main.startColor = color;
